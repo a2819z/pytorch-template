@@ -6,7 +6,7 @@ This is base code for Pytorch Distributed Data Parallel(DDP).
 
 This repository contains:
 
-1. [What is DDP?](ddp.md) for how a DDP works.
+1. [What is DDP?](docs/ddp_overview.pdf) for how a DDP works.
 2. [How to use this code](example-readmes/)
 
 ## Table of Contents
