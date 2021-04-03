@@ -1,0 +1,12 @@
+# pip install -r requirements.txt
+
+matplotlib
+numpy
+opencv-python
+Pillow
+PyYAML
+torch>=1.7.0
+torchvision>=0.8.1
+tqdm
+tensorboard>=2.4.1
+pandas
