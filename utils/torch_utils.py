@@ -11,6 +11,18 @@ import torch
 import torch.nn as nn
 
 
+def load_checkpoint(path, model, optim):
+    ckpt = torch.load(path)
+
+    model.load_state_dict(ckpt["model"])
+    optim.load_state_dict(ckpt["optim"])
+
+    start_epoch = ckpt["epoch"]
+    loss = ckpt["loss"]
+
+    return start_epoch, loss
+
+
 @contextmanager
 def torch_distributed_zero_first(local_rank: int):
     """
@@ -21,32 +33,6 @@ def torch_distributed_zero_first(local_rank: int):
     yield
     if local_rank == 0:
         torch.distributed.barrier()
-
-
-def select_device(device: str, batch_size: int) -> torch.device:
-    cpu = device.lower() == "cpu"
-    if cpu:
-        os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
-    elif device:
-        os.environ["CUDA_VISIBLE_DEVICES"] = device
-        assert (
-            torch.cuda.is_available()
-        ), f"CUDA unabailable, invalid device {device} requested"
-
-    cuda = not cpu and torch.cuda.is_available()
-    if cuda:
-        n = torch.cuda.device_count()
-        if n > 1 and batch_size:
-            assert (
-                batch_size % n == 0
-            ), f"batch-size {batch_size} not multiple of GPU count {n}"
-        s = ""
-        for idx, d in enumerate(device.split(",")) if device else range(n):
-            p = torch.cuda.get_device_properties(idx)
-            s += f"CUDA:{d} ({p.name}, {p.total_memory / 1024 ** 2}MB\n)"
-
-    print(s)  # TODO: print -> logger
-    return torch.device("cuda:0" if cuda else "cpu")
 
 
 def intersect_dicts(da: dict, db: dict, exclude=()) -> dict:
@@ -71,6 +57,10 @@ def is_parallel(model: nn.Module) -> bool:
         nn.parallel.DataParallel,
         nn.parallel.DistributedDataParallel,
     )
+
+
+def is_main_worker(rank):
+    return rank <= 0
 
 
 def copy_attr(a, b, include=(), exclude=()):

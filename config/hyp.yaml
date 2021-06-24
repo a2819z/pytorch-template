@@ -1,1 +1,13 @@
 # Hyperparameters
+
+# Model
+freeze: []
+
+# Optimizer
+optimizer: "adam"
+optimizer_args: ""
+lr: 0.0001
+amp: true
+
+# Loss Function
+loss_weights: []

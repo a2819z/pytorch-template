@@ -1,130 +1,116 @@
 import argparse
-import os
+import sys
 from pathlib import Path
-import time
 
-import yaml
+from sconf import Config, dump_args
 
 import torch
-import torch.nn as nn
 import torch.optim as optim
 import torch.distributed as dist
-from torch.cuda import amp
-from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.multiprocessing as mp
 from torch.utils.tensorboard import SummaryWriter
 
-from tqdm import tqdm
+from models.model import Generator
+from models.modules.modules import weights_init
+from trainer import Trainer, Evaluator
 
-from utils.torch_utils import ModelEMA, select_device, intersect_dicts, freeze_layer
+from utils.torch_utils import ModelEMA, is_main_worker, load_checkpoint
 from utils.general import init_seed
+from utils.logger import Logger
 from utils.datasets import create_dataloader
 
 
-def train(hyp, opt: argparse.Namespace, device: torch.device, tb_writer: SummaryWriter):
-    save_dir, epochs, batch_size, total_batch_size, weights, rank = (
-        Path(opt.save_dir),
-        opt.epochs,
-        opt.batch_size,
-        opt.total_batch_size,
-        opt.weights,
-        opt.global_rank,
+def parse_args_and_config():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--cfg", type=str, default="./config/defaults.yaml", help="model .yaml path"
+    )
+    parser.add_argment("--weights", type=str, defulat="", help="initial weight path")
+    parser.add_argument(
+        "--resume", type=str, default="", help="resume most recent training"
+    )
+    parser.add_argument(
+        "--device", default="", help="cuda devices, i.e. 0 or 1,2,3,4 or cpu"
     )
 
-    wdir = save_dir / "weights"
-    wdir.mkdir(parents=True, exist_ok=True)
+    args, left_argv = parser.parse_known_args()
+    cfg = Config(args.cfg, default="./config/defaults.yaml")
+    cfg.argv_update(left_argv)
 
-    with open(save_dir / "hyp.yaml", "w") as f:
-        yaml.dump(hyp, f, sort_keys=False)
-    with open(save_dir / "opt.yaml", "w") as f:
-        yaml.dump(vars(opt), f, sort_keys=False)
+    if cfg.use_ddp:
+        cfg.n_workers = 0
 
-    cuda = device.type != "cpu"
-    init_seed(777 + rank)
-    with open(opt.data) as f:
-        data_dict = yaml.load(f, Loader=yaml.SafeLoader)
+    cfg.work_dir = Path(cfg.work_dir)
+    (cfg.work_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
 
-    # Model
-    model = init_model(opt, weights, device)
-    freeze_layer(model, opt.hyp.freeze)
+    return args, cfg
 
-    train_path = data_dict["train"]
-    val_path = data_dict["val"]
 
-    optimizer = init_optimzer(opt, model)
-
-    ema = ModelEMA(model) if rank in [-1, 0] else None
-
-    start_epoch = resume(weights, optimizer, ema, device)
-
-    # DP mode
-    if cuda and rank == -1 and torch.cuda.device_count() > 1:
-        model = torch.nn.DataParallel(model)
-
-    dataloader, dataset = create_dataloader(
-        train_path,
-        batch_size,
-        opt,
-        hyp=hyp,
-        rank=rank,
-        world_size=opt.world_size,
-        workers=opt.workers,
+def train_ddp(local_rank, args, cfg, world_size):
+    dist.init_process_group(
+        backend="nccl",
+        init_method="tcp://127.0.0.1:" + str(cfg.port),
+        world_size=world_size,
+        rank=local_rank,
     )
-    nb = len(dataloader)
-    # Process 0
-    if rank in [-1, 0]:
-        testloader, testset = create_dataloader(
-            val_path,
-            batch_size * 2,
-            opt,
-            hyp=hyp,
-            rank=-1,
-            world_size=opt.world_size,
-            workers=opt.workers,
+    cfg.batch_size = cfg.batch_size // world_size
+    train(args, cfg, local_rank=local_rank)
+    dist.destroy_process_group()
+
+
+def train(args, cfg, local_rank=-1):
+    cfg.gpu = local_rank
+    torch.cuda.set_device(local_rank)
+
+    # logger setting
+    logger_path = cfg.work_dir / "log.log"
+    logger = Logger.get(file_path=logger_path, level="info", colorize=True)
+
+    tb_writer = SummaryWriter(logger_path)
+
+    args_str = dump_args(args)
+    if is_main_worker(cfg.gpu):
+        logger.info("Run Argv:\n> {}".format(" ".join(sys.argv)))
+        logger.info("Args:\n{}".format(args_str))
+        logger.info("Configs:\n{}".format(cfg.dumps()))
+
+    logger.info("Get dataset...")
+
+    train_loader, train_dataset = create_dataloader(
+        cfg.dataset.train,
+        cfg.batch_size,
+        use_ddp=cfg.use_ddp,
+        n_workers=cfg.n_workers,
+        shuffle=True,
+    )
+
+    if is_main_worker(cfg.gpu):
+        test_loader, test_dataset = create_dataloader(
+            cfg.datset.val,
+            cfg.batch_size,
+            use_ddp=False,
+            workers=cfg.n_workers,
+            shuffle=False,
         )
 
-    if cuda and rank != -1:
-        model = DDP(model, device_ids=[opt.local_rank], output_device=opt.local_rank)
+    # logger.inf("Build model ...")
+    generator = Generator(cfg)
+    optimizer = optim.Adam(generator.parameters(), lr=cfg.lr, betas=cfg.adam_betas)
 
-    scaler = amp.GradScaler(enabled=opt.hyp.amp)
-    # TODO: LossComputer
+    if cfg.resume:
+        start_epoch, loss = load_checkpoint(cfg.resume, generator, optimizer)
+        logger.info(f"Resumed checkpoint from {cfg.resume} (Epoch {start_epoch})")
 
-    # Start training
-    t0 = time.time()
-    for epoch in range(start_epoch, epochs):
-        model.train()
-        if rank != -1:
-            dataloader.sampler.set_epoch(epoch)
-        pbar = enumerate(dataloader)
-        if rank in [-1, 0]:
-            pbar = tqdm(pbar, total=nb)
+    evaluator = Evaluator()
 
-        optimizer.zero_grad()
-        for i, (img, labels) in pbar:
-            # TODO: Training process
-            pass
+    trainer = Trainer(
+        generator, optimizer, tb_writer, logger, evaluator, test_loader, cfg
+    )
+    trainer.train(train_loader, start_epoch, cfg.epoch)
 
+    generator.apply(weights_init(cfg.init))
 
-def init_model(opt, weights, device):
-    module = __import__(f"models.{opt.cfg.module}")
-    # TODO: Model configure opt
-    model = getattr(module, f"{opt.cfg.architecture}").to(device)
-
-    pretrained = weights.endswith(".pth")
-    if pretrained:
-        checkpoint = torch.load(weights, map_location=device)
-        state_dict = checkpoint["model"]
-        state_dict = intersect_dicts(state_dict, model.state_dict())
-        model.load_state_dict(state_dict, strict=False)
-
-    return model
-
-
-def init_optimzer(opt, model: nn.Module) -> optim.Optimizer:
-    eps = 1e-4 if opt.hyp.amp else 1e-8
-    args = opt.hyp.optim_args
-    kwargs = {"lr": opt.hyp.lr, "params": model.parameters(), "eps": eps}
-
-    return getattr(optim, opt.hyp.optimizer)(*args, **kwargs)
+    return generator
 
 
 def resume(weights, optimizer: optim.Optimizer, ema: ModelEMA, device, results):
@@ -145,48 +131,13 @@ def resume(weights, optimizer: optim.Optimizer, ema: ModelEMA, device, results):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argment("--weights", type=str, defulat="", help="initial weight path")
-    parser.add_argument("--cfg", type=str, default="", help="model .yaml path")
-    parser.add_argument("--data", type=str, default="", help="data .yaml path")
-    parser.add_argument("--hyp", type=str, default="", help="hyperparameters path")
-    parser.add_argument("--epochs", type=int, default=0)
-    parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument(
-        "--resume", type=str, default="", help="resume most recent training"
-    )
-    parser.add_argument(
-        "--device", default="", help="cuda devices, i.e. 0 or 1,2,3,4 or cpu"
-    )
-    parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--local_rank", default=-1, help="never change this value")
-    opt = parser.parse_args()
+    args, cfg = parse_args_and_config()
 
-    # Set DDP variable
-    opt.world_size = int(os.environ["WORLD_SIZE"]) if "WORLD_SIZE" in os.environ else 1
-    opt.global_rank = int(os.environ["RANK"]) if "RANK" in os.environ else -1
+    init_seed(7777)
 
-    if opt.resume:
-        pass
+    if cfg.use_ddp:
+        ngpus_per_node = torch.cuda_device_count()
+        world_size = ngpus_per_node
+        mp.spawn(train_ddp, nprocs=ngpus_per_node, args=(args, cfg, world_size))
     else:
-        opt.save_dir = ""
-
-    # DDP mode
-    opt.total_batch_size = opt.batch_size
-    device = select_device(opt.device, batch_size=opt.batch_size)
-    if opt.local_rank != -1:
-        torch.cuda.set_device(opt.local_rank)
-        device = torch.device("cuda", opt.local_rank)
-        dist.init_process_groupi(backend="nccl", init_method="env://")
-        assert (
-            opt.batch_size % opt.world_size == 0
-        ), "--batch-size must be multiple of CUDA device count"
-        opt.batch_size = opt.total_batch_size // opt.world_size
-
-    with open(opt.hyp) as f:
-        hyp = yaml.load(f, Loader=yaml.SafeLoader)
-
-    if opt.global_rank in [-1, 0]:
-        tb_writer = SummaryWriter(opt.save_dir)
-    train(hyp, opt, device, tb_writer)
-
+        train(args, cfg)

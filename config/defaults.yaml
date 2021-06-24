@@ -1,0 +1,88 @@
+use_ddp: False
+port:
+
+batch_size: 16
+
+resume:
+work_dir: ./exp_name
+seed: 7777
+lr: 1e-4
+n_workers: 8
+adam_betas: [0.0, 0.9]
+init: kaiming
+
+dataset:
+  train:
+    path:
+  val:
+    path:
+  test:
+    path:
+
+# model
+content_enc:
+  norm: in
+  activ: relu
+  pad_type: reflect
+  struct:
+    # VGG-like encoder structure
+    # [module, args, number]
+    [
+      [ConvBlock, [3, 64, 3, 1], 1], # conv1_1
+      [ConvBlock, [64, 64, 3, 1], 1], # conv1_2
+      [DownBlock, null, 1],
+      [ConvBlock, [64, 128, 3, 1], 1], # conv2_1
+      [ConvBlock, [128, 128, 3, 1], 1], # conv2_2
+      [DownBlock, null, 1],
+      [ConvBlock, [128, 256, 3, 1], 1], # conv3_1
+      [ConvBlock, [256, 256, 3, 1], 1], # conv3_2
+      [DownBlock, null, 1],
+      [ConvBlock, [256, 512, 3, 1], 1], # conv4_1
+    ]
+style_enc:
+  norm: none
+  activ: relu
+  pad_type: reflect
+  struct: [
+      [ConvBlock, [3, 64, 3, 1], 1], # conv1_1
+      [ConvBlock, [64, 64, 3, 1], 1], # conv1_2
+      [SkipBlock, null, 1],
+      [DownBlock, null, 1],
+      [ConvBlock, [64, 128, 3, 1], 1], # conv2_1
+      [ConvBlock, [128, 128, 3, 1], 1], # conv2_2
+      [SkipBlock, null, 1],
+      [DownBlock, null, 1],
+      [ConvBlock, [128, 256, 3, 1], 1], # conv3_1
+      [ConvBlock, [256, 256, 3, 1], 1], # conv3_2
+      [SkipBlock, null, 1],
+      [DownBlock, null, 1],
+      [ConvBlock, [256, 512, 3, 1], 1], # conv4_1
+    ]
+
+decoder:
+  activ: relu
+  pad_type: reflect
+  out: sigmoid
+  struct: [
+      [AdaIN, null, 1],
+      [ConvBlock, [512, 256, 3, 1], 1], # conv4_1
+      [UpBlock, null, 1],
+      [AdaIN, null, 1],
+      [ConvBlock, [256, 256, 3, 1], 1], # conv3_2
+      [ConvBlock, [256, 128, 3, 1], 1], # conv3_1
+      [UpBlock, null, 1],
+      [AdaIN, null, 1],
+      [ConvBlock, [128, 128, 3, 1], 1], # conv2_2
+      [ConvBlock, [128, 64, 3, 1], 1], # conv2_1
+      [UpBlock, null, 1],
+      [AdaIN, null, 1],
+      [ConvBlock, [64, 64, 3, 1], 1], # conv1_2
+      [ConvBlock, [64, 3, 3, 1], 1], # conv1_1
+    ]
+
+# losses (weight)
+
+# etc
+print_freq: 1000
+val_freq: 10000
+save_freq: 1 # Epoch

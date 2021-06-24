@@ -1,30 +1,29 @@
-import os
-
 import torch
-
-from utils.torch_utils import torch_distributed_zero_first
 
 
 def create_dataloader(
-    path, batch_size, opt, hyp=None, augment=None, rank=-1, world_size=1, workers=4
+    cfg, batch_size, augment=None, use_ddp=False, n_workers=4, shuffle=True
 ):
-    with torch_distributed_zero_first(rank):
-        data_module = __import__(f"dataset.{opt.data.type}")
-        dataset = data_module(path, opt.data.args)  # TODO: yaml args, kwargs type check
+    data_module = __import__(f"dataset.{cfg.type}")
+    dataset = data_module(cfg.path, **cfg["args"])
 
-    batch_size = min(batch_size, len(dataset))
-    nw = min(
-        [os.cpu_count() // world_size, batch_size if batch_size > 1 else 0, workers]
-    )  # number of workers
-    sampler = (
-        torch.utils.data.distributed.DistributedSampler(dataset) if rank != -1 else None
-    )
+    if use_ddp:
+        sampler = torch.utils.data.distributed.DistributedSampler(dataset)
+        shuffle = False
+    else:
+        sampler = None
+
     loader = (
         torch.utils.data.DataLoader if True else InfiniteDataLoader
     )  # TODO: InfiniteDataLoader flags
 
     dataloader = loader(
-        dataset, batch_size=batch_size, num_workers=nw, sampler=sampler, pin_memory=True
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=n_workers,
+        sampler=sampler,
+        pin_memory=True,
     )
 
     return dataloader, dataset
