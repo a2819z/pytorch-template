@@ -1,5 +1,6 @@
 use_ddp: False
 port:
+amp: True
 
 batch_size: 16
 
@@ -10,6 +11,8 @@ lr: 1e-4
 n_workers: 8
 adam_betas: [0.0, 0.9]
 init: kaiming
+
+epoch: 10
 
 dataset:
   train:
@@ -60,6 +63,7 @@ style_enc:
     ]
 
 decoder:
+  norm: none
   activ: relu
   pad_type: reflect
   out: sigmoid
@@ -80,7 +84,26 @@ decoder:
       [ConvBlock, [64, 3, 3, 1], 1], # conv1_1
     ]
 
+discriminator:
+  norm: none
+  activ: lrelu
+  pad_type: zeros
+  out: sigmoid
+  struct:
+    [
+      [ConvBlock, [3, 64, 3, 1], 1],
+      [ConvBlock, [64, 128, 3, 1], 1],
+      [DownBlock, null, 1],
+      [ConvBlock, [128, 256, 3, 1], 1],
+      [DownBlock, null, 1],
+      [ConvBlock, [256, 512, 3, 1], 1],
+      [ResBlock, [512, 512, 3, 1], 1],
+      [ConvBlock, [512, 1, 3, 1], 1],
+    ]
+
 # losses (weight)
+pixel_w: 10
+fm_w: 1
 
 # etc
 print_freq: 1000

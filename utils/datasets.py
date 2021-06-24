@@ -4,7 +4,9 @@ import torch
 def create_dataloader(
     cfg, batch_size, augment=None, use_ddp=False, n_workers=4, shuffle=True
 ):
-    data_module = __import__(f"dataset.{cfg.type}")
+    import dataset
+
+    data_module = getattr(dataset, cfg.type)
     dataset = data_module(cfg.path, **cfg["args"])
 
     if use_ddp:

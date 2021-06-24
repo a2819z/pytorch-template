@@ -2,8 +2,7 @@ from functools import partial
 
 import torch.nn as nn
 
-from models.modules import parse_layer_from_cfg
-from models.modules.block import ConvBlock, ResBlock, SkipBlock, AdaIN
+from models.modules.block import ConvBlock, ResBlock, SkipBlock, AdaIN, UpBlock
 
 
 class Decoder(nn.Module):
@@ -52,7 +51,7 @@ def decoder_builder(cfg):
     ResBlk = partial(ResBlock, norm=cfg.norm, activ=cfg.activ, pad_type=cfg.pad_type)
 
     layers = []
-    for i, (m, args, n) in enumerate(cfg):
+    for i, (m, args, n) in enumerate(cfg.struct):
         m = eval(m) if isinstance(m, str) else m
         skip_flag = True if isinstance(m, SkipBlock) else False
 
@@ -68,4 +67,4 @@ def decoder_builder(cfg):
 
         layers.append(m_)
 
-    return nn.ModuleList(*layers), skip_flag
+    return nn.ModuleList(layers), skip_flag

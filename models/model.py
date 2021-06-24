@@ -8,7 +8,7 @@ class Generator(nn.Module):
     def __init__(self, cfg):
         super(Generator, self).__init__()
 
-        self.content_enc = Encoder(cfg.contnet_enc)
+        self.content_enc = Encoder(cfg.content_enc)
         self.style_enc = Encoder(cfg.style_enc)
         self.decoder = Decoder(cfg.decoder)
 

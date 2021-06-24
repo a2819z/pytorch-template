@@ -25,7 +25,7 @@ def parse_args_and_config():
     parser.add_argument(
         "--cfg", type=str, default="./config/defaults.yaml", help="model .yaml path"
     )
-    parser.add_argment("--weights", type=str, defulat="", help="initial weight path")
+    parser.add_argument("--weights", type=str, default="", help="initial weight path")
     parser.add_argument(
         "--resume", type=str, default="", help="resume most recent training"
     )
@@ -66,7 +66,7 @@ def train(args, cfg, local_rank=-1):
     logger_path = cfg.work_dir / "log.log"
     logger = Logger.get(file_path=logger_path, level="info", colorize=True)
 
-    tb_writer = SummaryWriter(logger_path)
+    tb_writer = SummaryWriter(cfg.work_dir)
 
     args_str = dump_args(args)
     if is_main_worker(cfg.gpu):
@@ -86,17 +86,20 @@ def train(args, cfg, local_rank=-1):
 
     if is_main_worker(cfg.gpu):
         test_loader, test_dataset = create_dataloader(
-            cfg.datset.val,
+            cfg.dataset.val,
             cfg.batch_size,
             use_ddp=False,
-            workers=cfg.n_workers,
+            n_workers=cfg.n_workers,
             shuffle=False,
         )
 
     # logger.inf("Build model ...")
     generator = Generator(cfg)
+    generator.apply(weights_init(cfg.init))
+
     optimizer = optim.Adam(generator.parameters(), lr=cfg.lr, betas=cfg.adam_betas)
 
+    start_epoch = 0
     if cfg.resume:
         start_epoch, loss = load_checkpoint(cfg.resume, generator, optimizer)
         logger.info(f"Resumed checkpoint from {cfg.resume} (Epoch {start_epoch})")
@@ -107,8 +110,6 @@ def train(args, cfg, local_rank=-1):
         generator, optimizer, tb_writer, logger, evaluator, test_loader, cfg
     )
     trainer.train(train_loader, start_epoch, cfg.epoch)
-
-    generator.apply(weights_init(cfg.init))
 
     return generator
 

@@ -26,13 +26,16 @@ class Trianer(BaseTrainer):
             self.optimizer.zero_grad()
             for i, (img, labels) in pbar:
                 with torch.cuda.amp.autocast() if self.cfg.amp else dummy_context_mgr() as mpc:
-                    """
-                    1. Model Forwarding
-                    2. Loss Calculation
-                    3. Optimize
-                    4. Validation
-                    """
-                    pass
+                    output = self.model(img)
+                    loss = None  # Loss calculation
+
+                    if self.cfg.amp:
+                        self.scaler.scale(loss).backward()
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                    else:
+                        loss.backward()
+                        self.optimizer.step()
 
                 if is_main_worker(self.cfg.gpu):
                     if iter_step % self.cfg.print_freq == 0:
